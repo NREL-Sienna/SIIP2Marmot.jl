@@ -16,7 +16,7 @@ const PSB = PowerSystemCaseBuilder
 
 optimizer = JuMP.optimizer_with_attributes(Cbc.Optimizer)
 
-include("test/test_utils.jl")
+include("./test_utils.jl")
 
 test_simulation_export(optimizer)
 test_problem_export(optimizer)
