@@ -127,10 +127,16 @@ function test_problem_export(optimizer)
     @test solve!(UC; optimizer=optimizer) == RunStatus.SUCCESSFUL
     res = ProblemResults(UC)
 
-    set_system!(results_uc, c_sys)
+    set_system!(res, c_sys5)
 
-    export_dir = joinpath(results_uc.execution_path, "results")
-    export_marmot_inputs(results_uc, export_dir)
+    export_dir = joinpath(res.execution_path, "results")
+    export_marmot_inputs(res, export_dir)
+
+    variables = PSI.read_variables(results_uc)
+    aux_variables = PSI.read_aux_variables(results_uc)
+    parameters = PSI.read_parameters(results_uc)
+    duals = PSI.read_duals(results_uc)
+    expressions = PSI.read_expressions(results_uc)
 
     generation_actual_path = joinpath(export_dir, "generation_actual.csv")
     @test isfile(generation_actual_path)
@@ -146,7 +152,7 @@ function test_problem_export(optimizer)
 
     installed_capacity_path = joinpath(export_dir, "installed_capacity.csv")
     @test isfile(installed_capacity_path)
-    test_installed_capacity(c_sys, installed_capacity_path)
+    test_installed_capacity(c_sys5, installed_capacity_path)
 
     regional_load_path = joinpath(export_dir, "regional_load.csv")
     @test isfile(regional_load_path)

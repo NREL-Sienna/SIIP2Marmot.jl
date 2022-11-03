@@ -330,4 +330,5 @@ end
 function export_marmot_inputs(system::PSY.System, save_dir; kwargs...)
     preset_system_unit_settings!(system)
     export_installed_capacity(system, save_dir; kwargs)
+    export_system_metadata(sys, save_dir)
 end
