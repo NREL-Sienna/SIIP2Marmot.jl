@@ -44,7 +44,7 @@ function export_commitment(variables, save_dir; kwargs...)
     return
 end
 
-function export_power_flow(system, variables, expressions, save_dirs; kwargs...)
+function export_power_flow(system, variables, expressions, save_dir; kwargs...)
     power_flow_mode = get(kwargs, :power_flow, PowerFlowExport.VARIABLE_VALUE_BASED)
     if power_flow_mode == PowerFlowExport.INJECTION_CALCULATION_BASED
         ptdf = PSY.PTDF(system)
@@ -167,7 +167,7 @@ function export_net_demand(results, variables, parameters, save_dir; kwargs...)
     for (name, df) in active_powerin_dataframes
         for col in names(df)
             if !haskey(load_df, col)
-                load_df[col] = df[:, col]
+                load_df[Symbol(col)] = df[:, col]
             else
                 @warn("Column name already exist with the name $(col), please make sure dataset has unique generator names")
             end
