@@ -44,14 +44,82 @@ function export_commitment(variables, save_dir; kwargs...)
     return
 end
 
-function export_power_flow(system, variables, expressions, save_dirs; kwargs...)
-    power_flow_mode = get(kwargs, :power_flow, PowerFlowExport.VARIABLE_VALUE_BASED)
-    if power_flow_mode == PowerFlowExport.INJECTION_CALCULATION_BASED
-        ptdf = PSY.PTDF(system)
-        calculate_power_flow(expressions, ptdf)
-        return
+
+function find_interfaces(sys, branch_filter = get_available)
+    interfaces = Dict{Set,Vector{ACBranch}}()
+    for br in get_components(ACBranch, sys, branch_filter)
+        from_area = get_area(get_from(get_arc(br)))
+        to_area = get_area(get_to(get_arc(br)))
+        if from_area != to_area
+            key = Set(get_name.([from_area, to_area]))
+            if haskey(interfaces, key)
+                push!(interfaces[key], br)
+            else
+                interfaces[key] = [br]
+            end
+        end
     end
-    active_power_flow_dataframes = filter(x -> startswith(x[1], "FlowActivePowerVariable"), variables)
+    return interfaces
+end
+
+function find_custom_interfaces(sys, bus_to_custom_area, branch_filter = get_available)
+    interfaces = Dict{Set,Vector{ACBranch}}()
+    for br in get_components(ACBranch, sys, branch_filter)
+        from_area = bus_to_custom_area[get_number(get_from(get_arc(br)))]
+        to_area = bus_to_custom_area[get_number(get_to(get_arc(br)))]
+        if from_area != to_area
+            key = [from_area, to_area]
+            if haskey(interfaces, key)
+                push!(interfaces[key], br)
+            else
+                interfaces[key] = [br]
+            end
+        end
+    end
+    return interfaces
+end
+
+function export_interface_flow(
+    system,
+    variables,
+    expressions,
+    save_dirs,
+    branch_filter = get_available;
+    kwargs...
+)
+    line_flows_df = read_power_flow(system, variables, expressions; kwargs...)
+    interfaces = find_interfaces(sys, branch_filter)
+    interface_flow = Dict()
+    interface_flow[:DateTime] = line_flows_df[:, :DateTime]
+    for (interface, lines) in interfaces
+        interface_flow[interface] = sum(eachcol(line_flows_df[:, lines]))
+    end
+    interface_flow_df = DataFrame(interface_flow)
+    return select!(interface_flow_df, :DateTime, Not(:DateTime))
+end
+
+function export_custom_interface_flow(
+    system,
+    variables,
+    expressions,
+    bus_to_custom_area,
+    save_dirs,
+    branch_filter= get_available; 
+    kwargs...
+)
+    line_flows_df = read_power_flow(system, variables, expressions; kwargs...)
+    interfaces = find_custom_interfaces(sys, bus_to_custom_area, branch_filter)
+    interface_flow = Dict()
+    interface_flow[:DateTime] = line_flows_df[:, :DateTime]
+    for (interface, lines) in interfaces
+        interface_flow[interface] = sum(eachcol(line_flows_df[:, lines]))
+    end
+    interface_flow_df = DataFrame(interface_flow)
+    return select!(interface_flow_df, :DateTime, Not(:DateTime))
+end
+
+function read_power_flow(system, variables, expressions; kwargs...)
+    active_power_flow_dataframes = filter(x -> startswith(x[1], "FlowActivePower"), variables)
     nodal_injections = filter(x -> startswith(x[1], "ActivePowerBalance__Bus"), expressions)
 
     if isempty(active_power_flow_dataframes) && isempty(nodal_injections)
@@ -67,13 +135,24 @@ function export_power_flow(system, variables, expressions, save_dirs; kwargs...)
             if !haskey(active_power_df, col)
                 active_power_df[col] = df[:, col]
             else
-                @warn("Column name already exist with the name $(col), please make sure dataset has unique generator names")
+                @warn("Column already exist with the name $(col) in $(name), please make sure dataset has unique generator names")
             end
         end
     end
     df = DataFrame(active_power_df)
+    return select!(df, :DateTime, Not(:DateTime))
+end
+
+function export_power_flow(system, variables, expressions, save_dirs; kwargs...)
+    power_flow_mode = get(kwargs, :power_flow, PowerFlowExport.VARIABLE_VALUE_BASED)
+    if power_flow_mode == PowerFlowExport.INJECTION_CALCULATION_BASED
+        ptdf = PSY.PTDF(system)
+        calculate_power_flow(expressions, ptdf)
+        return
+    end
+    df = read_power_flow(system, variables, expressions; kwargs...)
     write_marmot_file(
-        select!(df, :DateTime, Not(:DateTime)),
+        df,
         joinpath(save_dir, "power_flow_actual.csv");
         kwargs
     )
@@ -181,7 +260,7 @@ function export_net_demand(results, variables, parameters, save_dir; kwargs...)
     return
 end
 
-function export_installed_capacity(system::PSY.System, save_dir; kwargs...)
+function read_installed_capacity(system::PSY.System, save_dir; kwargs...)
     installed_caps = Dict()
     # TODO: expand to all components, including transmission and all types load 
     for gen_type in [PSY.ThermalGen, PSY.RenewableGen, PSY.HydroGen, PSY.Storage, PSY.HybridSystem]
@@ -190,8 +269,13 @@ function export_installed_capacity(system::PSY.System, save_dir; kwargs...)
         end
     end
     installed_caps["DateTime"] = Dates.year(PSY.get_forecast_initial_timestamp(system))
+    return select!(DataFrame(installed_caps), :DateTime, Not(:DateTime))
+end
+
+function export_installed_capacity(system::PSY.System, save_dir; kwargs...)
+    df = read_installed_capacity(system, save_dir; kwargs)
     write_marmot_file(
-        select!(DataFrame(installed_caps), :DateTime, Not(:DateTime)),
+        df,
         joinpath(save_dir, "installed_capacity.csv");
         kwargs
     )
