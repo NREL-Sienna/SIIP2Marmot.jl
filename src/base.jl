@@ -246,7 +246,7 @@ function export_net_demand(results, variables, parameters, save_dir; kwargs...)
     for (name, df) in active_powerin_dataframes
         for col in names(df)
             if !haskey(load_df, col)
-                load_df[col] = df[:, col]
+                load_df[Symbol(col)] = df[:, col]
             else
                 @warn("Column name already exist with the name $(col), please make sure dataset has unique generator names")
             end
