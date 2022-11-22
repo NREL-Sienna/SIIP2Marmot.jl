@@ -17,7 +17,7 @@ function export_generation(variables, aux_variables, save_dir; kwargs...)
     write_marmot_file(
         select!(df, :DateTime, DataFrames.Not(:DateTime)),
         joinpath(save_dir, "generation_actual.csv");
-        kwargs
+        kwargs...
     )
     return
 end
@@ -39,63 +39,34 @@ function export_commitment(variables, save_dir; kwargs...)
     write_marmot_file(
         select!(df, :DateTime, Not(:DateTime)),
         joinpath(save_dir, "generation_commitment.csv");
-        kwargs
+        kwargs...
     )
     return
-end
-
-
-function find_interfaces(sys, branch_filter = get_available)
-    interfaces = Dict{Set,Vector{ACBranch}}()
-    for br in get_components(ACBranch, sys, branch_filter)
-        from_area = get_area(get_from(get_arc(br)))
-        to_area = get_area(get_to(get_arc(br)))
-        if from_area != to_area
-            key = Set(get_name.([from_area, to_area]))
-            if haskey(interfaces, key)
-                push!(interfaces[key], br)
-            else
-                interfaces[key] = [br]
-            end
-        end
-    end
-    return interfaces
-end
-
-function find_custom_interfaces(sys, bus_to_custom_area, branch_filter = get_available)
-    interfaces = Dict{Set,Vector{ACBranch}}()
-    for br in get_components(ACBranch, sys, branch_filter)
-        from_area = bus_to_custom_area[get_number(get_from(get_arc(br)))]
-        to_area = bus_to_custom_area[get_number(get_to(get_arc(br)))]
-        if from_area != to_area
-            key = [from_area, to_area]
-            if haskey(interfaces, key)
-                push!(interfaces[key], br)
-            else
-                interfaces[key] = [br]
-            end
-        end
-    end
-    return interfaces
 end
 
 function export_interface_flow(
     system,
     variables,
     expressions,
-    save_dirs,
-    branch_filter = get_available;
+    save_dir,
+    branch_filter = PSY.get_available;
     kwargs...
 )
-    line_flows_df = read_power_flow(system, variables, expressions; kwargs...)
-    interfaces = find_interfaces(sys, branch_filter)
+    line_flows_df = export_power_flow(system, variables, expressions, save_dir; kwargs...)
+    interfaces = find_interfaces(system, branch_filter)
     interface_flow = Dict()
-    interface_flow[:DateTime] = line_flows_df[:, :DateTime]
+    interface_flow["DateTime"] = line_flows_df[:, :DateTime]
     for (interface, lines) in interfaces
         interface_flow[interface] = sum(eachcol(line_flows_df[:, lines]))
     end
     interface_flow_df = DataFrame(interface_flow)
-    return select!(interface_flow_df, :DateTime, Not(:DateTime))
+    df = select!(interface_flow_df, :DateTime, Not(:DateTime))
+    write_marmot_file(
+        df,
+        joinpath(save_dir, "interface_flow.csv");
+        kwargs...
+    )
+    return df
 end
 
 function export_custom_interface_flow(
@@ -103,31 +74,37 @@ function export_custom_interface_flow(
     variables,
     expressions,
     bus_to_custom_area,
-    save_dirs,
-    branch_filter= get_available; 
+    save_dir,
+    branch_filter= PSY.get_available; 
     kwargs...
 )
-    line_flows_df = read_power_flow(system, variables, expressions; kwargs...)
-    interfaces = find_custom_interfaces(sys, bus_to_custom_area, branch_filter)
+    line_flows_df = export_power_flow(system, variables, expressions, save_dir; kwargs...)
+    interfaces = find_custom_interfaces(system, bus_to_custom_area, branch_filter)
     interface_flow = Dict()
-    interface_flow[:DateTime] = line_flows_df[:, :DateTime]
+    interface_flow["DateTime"] = line_flows_df[:, :DateTime]
     for (interface, lines) in interfaces
-        interface_flow[interface] = sum(eachcol(line_flows_df[:, lines]))
+        names = string.(PSY.get_name.(lines))
+        interface_flow[string(interface)] = sum(eachcol(line_flows_df[:, names]))
     end
     interface_flow_df = DataFrame(interface_flow)
-    return select!(interface_flow_df, :DateTime, Not(:DateTime))
+    df = select!(interface_flow_df, :DateTime, Not(:DateTime))
+    write_marmot_file(
+        df,
+        joinpath(save_dir, "interface_flow_custom.csv");
+        kwargs...
+    )
+    return df
 end
+
 
 function read_power_flow(system, variables, expressions; kwargs...)
     active_power_flow_dataframes = filter(x -> startswith(x[1], "FlowActivePower"), variables)
     nodal_injections = filter(x -> startswith(x[1], "ActivePowerBalance__Bus"), expressions)
 
     if isempty(active_power_flow_dataframes) && isempty(nodal_injections)
-        @info("Simultaion Model doesnt contain network models with explicit flow variables, skipping export of reserve contribution")
-        return
+        error("Simultaion Model doesnt contain network models with explicit flow variables, skipping export of reserve contribution")
     elseif !isempty(nodal_injections)
-        @info("Simultaion Model doesnt contain network models with explicit flow variables but includes nodal injection expression which will be used to export of reserve contribution")
-        return
+        error("Simultaion Model doesnt contain network models with explicit flow variables but includes nodal injection expression which will be used to export of reserve contribution")
     end
     active_power_df = Dict()
     for (name, df) in active_power_flow_dataframes
@@ -143,26 +120,31 @@ function read_power_flow(system, variables, expressions; kwargs...)
     return select!(df, :DateTime, Not(:DateTime))
 end
 
-function export_power_flow(system, variables, expressions, save_dirs; kwargs...)
+function export_power_flow(system, variables, expressions, save_dir; kwargs...)
     power_flow_mode = get(kwargs, :power_flow, PowerFlowExport.VARIABLE_VALUE_BASED)
+    ptdf_passed = get(kwargs, :ptdf, isnothing)
     if power_flow_mode == PowerFlowExport.INJECTION_CALCULATION_BASED
-        ptdf = PSY.PTDF(system)
-        calculate_power_flow(expressions, ptdf)
-        return
+        if isnothing(ptdf_passed)
+            ptdf = PSY.PTDF(system)
+        else
+            ptdf = ptdf_passed
+        end
+        df = calculate_power_flow(expressions, ptdf, save_dir)
+    else
+        df = read_power_flow(system, variables, expressions; kwargs...)
     end
-    df = read_power_flow(system, variables, expressions; kwargs...)
     write_marmot_file(
         df,
         joinpath(save_dir, "power_flow_actual.csv");
-        kwargs
+        kwargs...
     )
-    return
+    return df
 end
 
-function calculate_power_flow(expressions, ptdf; kwargs...)
+function calculate_power_flow(expressions, ptdf, save_dir; kwargs...)
     length_ts = length(expressions["ActivePowerBalance__Bus"][:, "DateTime"])
     col_names = vcat("DateTime", ptdf.axes[1])
-    col_types = vcat([DateTime], repeat([Float64], length(col_names) - 1))
+    col_types = vcat([Any], repeat([Float64], length(col_names) - 1))
     df = DataFrame([n => Vector{T}(undef, length_ts) for (n, T) in zip(col_names, col_types)], copycols=false)
     df[:, "DateTime"] = expressions["ActivePowerBalance__Bus"][:, "DateTime"]
 
@@ -173,9 +155,9 @@ function calculate_power_flow(expressions, ptdf; kwargs...)
     write_marmot_file(
         select!(df, :DateTime, Not(:DateTime)),
         joinpath(save_dir, "power_flow_actual.csv");
-        kwargs
+        kwargs...
     )
-    return
+    return select!(df, :DateTime, Not(:DateTime))
 end
 
 function export_generation_timeseries(parameters, save_dir; kwargs...)
@@ -194,7 +176,7 @@ function export_generation_timeseries(parameters, save_dir; kwargs...)
     write_marmot_file(
         select!(df, :DateTime, Not(:DateTime)),
         joinpath(save_dir, "generation_availability.csv");
-        kwargs
+        kwargs...
     )
     return
 end
@@ -222,7 +204,7 @@ function export_reserve_contribution(variables, save_dir; kwargs...)
     write_marmot_file(
         select!(df, :DateTime, Not(:DateTime)),
         joinpath(save_dir, "reserve_contribution.csv");
-        kwargs
+        kwargs...
     )
     return
 end
@@ -255,7 +237,7 @@ function export_net_demand(results, variables, parameters, save_dir; kwargs...)
     write_marmot_file(
         select!(DataFrame(load_df), :DateTime, Not(:DateTime)),
         joinpath(save_dir, "regional_load.csv");
-        kwargs
+        kwargs...
     )
     return
 end
@@ -277,7 +259,7 @@ function export_installed_capacity(system::PSY.System, save_dir; kwargs...)
     write_marmot_file(
         df,
         joinpath(save_dir, "installed_capacity.csv");
-        kwargs
+        kwargs...
     )
     return
 end
@@ -377,15 +359,15 @@ function export_marmot_inputs(results::PSI.ProblemResults, save_dir, export_part
     else
         export_system_metadata(sys, save_dir)
     end
-    export_generation(variables, aux_variables, save_dir; kwargs)
-    export_generation_timeseries(parameters, save_dir; kwargs)
-    export_reserve_contribution(variables, save_dir; kwargs)
-    export_commitment(variables, save_dir, ; kwargs)
+    export_generation(variables, aux_variables, save_dir; kwargs...)
+    export_generation_timeseries(parameters, save_dir; kwargs...)
+    export_reserve_contribution(variables, save_dir; kwargs...)
+    export_commitment(variables, save_dir, ; kwargs...)
 
-    export_power_flow(system, variables, expressions, save_dir; kwargs)
+    export_power_flow(system, variables, expressions, save_dir; kwargs...)
 
-    export_net_demand(results, parameters, save_dir; kwargs)
-    export_installed_capacity(system, save_dir; kwargs)
+    export_net_demand(results, parameters, save_dir; kwargs...)
+    export_installed_capacity(system, save_dir; kwargs...)
 end
 
 
@@ -400,19 +382,68 @@ function export_marmot_inputs(results::PSI.SimulationProblemResults, save_dir; k
     expressions = PSI.read_realized_expressions(results)
 
     export_system_metadata(system, save_dir)
-    export_generation(variables, aux_variables, save_dir; kwargs)
-    export_generation_timeseries(parameters, save_dir; kwargs)
-    export_reserve_contribution(variables, save_dir; kwargs)
-    export_commitment(variables, save_dir; kwargs)
+    export_generation(variables, aux_variables, save_dir; kwargs...)
+    export_generation_timeseries(parameters, save_dir; kwargs...)
+    export_reserve_contribution(variables, save_dir; kwargs...)
+    export_commitment(variables, save_dir; kwargs...)
 
-    export_power_flow(system, variables, expressions, save_dir; kwargs)
+    export_power_flow(system, variables, expressions, save_dir; kwargs...)
 
-    export_net_demand(results, variables, parameters, save_dir; kwargs)
-    export_installed_capacity(system, save_dir; kwargs)
+    export_net_demand(results, variables, parameters, save_dir; kwargs...)
+    export_installed_capacity(system, save_dir; kwargs...)
 end
 
 function export_marmot_inputs(system::PSY.System, save_dir; kwargs...)
     preset_system_unit_settings!(system)
-    export_installed_capacity(system, save_dir; kwargs)
+    export_installed_capacity(system, save_dir; kwargs...)
     export_system_metadata(system, save_dir)
+end
+
+function export_custom_interface_flow(
+    results::PSI.SimulationProblemResults,
+    bus_to_custom_area,
+    save_dir,
+    branch_filter = PSY.get_available; 
+    kwargs...
+)
+
+    system = PSI.get_system(results)
+    preset_system_unit_settings!(system)
+
+    variables = PSI.read_realized_variables(results)
+    expressions = PSI.read_realized_expressions(results)
+    df = export_custom_interface_flow(
+        system,
+        variables,
+        expressions,
+        bus_to_custom_area,
+        save_dir,
+        branch_filter; 
+        kwargs...
+    )
+    return df
+end
+
+
+function export_interface_flow(
+    results::PSI.SimulationProblemResults,
+    save_dir,
+    branch_filter = PSY.get_available; 
+    kwargs...
+)
+
+    system = PSI.get_system(results)
+    preset_system_unit_settings!(system)
+
+    variables = PSI.read_realized_variables(results)
+    expressions = PSI.read_realized_expressions(results)
+    df = export_interface_flow(
+        system,
+        variables,
+        expressions,
+        save_dir,
+        branch_filter; 
+        kwargs...
+    )
+    return df
 end

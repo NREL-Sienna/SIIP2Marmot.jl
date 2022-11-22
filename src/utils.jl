@@ -40,3 +40,37 @@ IS.@scoped_enum(
     VARIABLE_VALUE_BASED = 1,
     INJECTION_CALCULATION_BASED = 2
 )
+
+function find_interfaces(sys::PSY.System, branch_filter = PSY.get_available)
+    interfaces = Dict{Set,Vector{PSY.ACBranch}}()
+    for br in PSY.get_components(PSY.ACBranch, sys, branch_filter)
+        from_area = PSY.get_area(PSY.get_from(PSY.get_arc(br)))
+        to_area = PSY.get_area(PSY.get_to(PSY.get_arc(br)))
+        if from_area != to_area
+            key = Set(get_name.([from_area, to_area]))
+            if haskey(interfaces, key)
+                push!(interfaces[key], br)
+            else
+                interfaces[key] = [br]
+            end
+        end
+    end
+    return interfaces
+end
+
+function find_custom_interfaces(sys::PSY.System, bus_to_custom_area, branch_filter = PSY.get_available)
+    interfaces = Dict{Set,Vector{PSY.ACBranch}}()
+    for br in PSY.get_components(PSY.ACBranch, sys, branch_filter)
+        from_area = bus_to_custom_area[PSY.get_number(PSY.get_from(PSY.get_arc(br)))]
+        to_area = bus_to_custom_area[PSY.get_number(PSY.get_to(PSY.get_arc(br)))]
+        if from_area != to_area
+            key = Set([from_area, to_area])
+            if haskey(interfaces, key)
+                push!(interfaces[key], br)
+            else
+                interfaces[key] = [br]
+            end
+        end
+    end
+    return interfaces
+end

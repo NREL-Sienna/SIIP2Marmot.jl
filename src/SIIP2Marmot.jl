@@ -12,6 +12,11 @@ export calculate_power_flow
 export export_power_flow
 export export_commitment
 export export_generation
+export find_interfaces
+export find_interfaces
+export read_power_flow
+export export_custom_interface_flow
+export export_interface_flow
 export PowerFlowExport
 
 #################################################################################
