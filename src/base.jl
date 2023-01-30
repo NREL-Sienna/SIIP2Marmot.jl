@@ -97,6 +97,49 @@ function export_custom_interface_flow(
 end
 
 
+
+function build_nodal_injection_data(system, variables, parameters)
+    nodal_injection = Dict()
+    bus_numbers = PSY.get_number.(PSY.get_components(Bus, system))
+    generators = PSY.get_components(PSY.Generator, system)
+    generator_types = unique(typeof.(generators))
+    for gen_type in generator_types
+        var_keys = filter(x-> occursin("$gen_type", x) && occursin("ActivePower", x), keys(variables))
+        for gen in PSY.get_components(gen_type, system), var in var_keys
+            name = PSY.get_name(gen)
+            bus =PSY.get_number(PSY.get_bus(gen))
+            if haskey(nodal_injection, bus)
+                nodal_injection[bus] = nodal_injection[bus] .+ variables[var][:, name]
+            else
+                nodal_injection[bus] = nodal_injection[bus] .+ variables[var][:, name]
+            end
+            if !haskey(nodal_injection, :DateTime)
+                nodal_injection[:DateTime] = variables[var][:, :DateTime]
+            end
+        end
+    end
+
+    loads = PSY.get_components(PSY.StaticLoad, sys)
+    load_types = unique(typeof.(loads))
+    for load_type in load_types
+        param_keys = filter(x-> occursin("$load_type", x) && occursin("ActivePowerTimeSeriesParameter", x), keys(variables))
+        for load in PSY.get_components(load_type, system), param in param_keys
+            name = PSY.get_name(load)
+            bus = PSY.get_number(PSY.get_bus(load))
+            if haskey(nodal_injection, bus)
+                nodal_injection[bus] = nodal_injection[bus] .+ parameters[var][:, name]
+            else
+                nodal_injection[bus] = nodal_injection[bus] .+ parameters[var][:, name]
+            end
+            if !haskey(nodal_injection, :DateTime)
+                nodal_injection[:DateTime] = parameters[var][:, :DateTime]
+            end
+        end
+    end
+    df = DataFrame(nodal_injection)
+    return  select!(df, :DateTime, Not(:DateTime))
+end
+
 function read_power_flow(system, variables, expressions; kwargs...)
     active_power_flow_dataframes = filter(x -> startswith(x[1], "FlowActivePower"), variables)
     nodal_injections = filter(x -> startswith(x[1], "ActivePowerBalance__Bus"), expressions)
