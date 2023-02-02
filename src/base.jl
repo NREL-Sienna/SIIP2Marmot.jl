@@ -48,11 +48,12 @@ function export_interface_flow(
     system,
     variables,
     expressions,
+    parameters,
     save_dir,
     branch_filter = PSY.get_available;
     kwargs...
 )
-    line_flows_df = export_power_flow(system, variables, expressions, save_dir; kwargs...)
+    line_flows_df = export_power_flow(system, variables, expressions, parameters, save_dir; kwargs...)
     interfaces = find_interfaces(system, branch_filter)
     interface_flow = Dict()
     interface_flow["DateTime"] = line_flows_df[:, :DateTime]
@@ -73,12 +74,13 @@ function export_custom_interface_flow(
     system,
     variables,
     expressions,
+    parameters,
     bus_to_custom_area,
     save_dir,
     branch_filter= PSY.get_available; 
     kwargs...
 )
-    line_flows_df = export_power_flow(system, variables, expressions, save_dir; kwargs...)
+    line_flows_df = export_power_flow(system, variables, expressions, parameters, save_dir; kwargs...)
     interfaces = find_custom_interfaces(system, bus_to_custom_area, branch_filter)
     interface_flow = Dict()
     interface_flow["DateTime"] = line_flows_df[:, :DateTime]
@@ -97,10 +99,84 @@ function export_custom_interface_flow(
 end
 
 
+
+function build_nodal_injection_data(system, variables, parameters)
+    nodal_injection = Dict()
+    bus_numbers = PSY.get_number.(PSY.get_components(PSY.Bus, system))
+    generators = PSY.get_components(PSY.Generator, system)
+    generator_types = unique(typeof.(generators))
+    storages = PSY.get_components(PSY.Storage, system)
+    generator_types = vcat(generator_types, unique(typeof.(storages)))
+    for gen_type in generator_types
+        @show gen_type
+        var_keys = filter(x-> occursin("$gen_type", x) && occursin("ActivePower", x), keys(variables))
+        for gen in PSY.get_components(gen_type, system, PSY.get_available), var in var_keys
+            name = PSY.get_name(gen)
+            bus = PSY.get_number(PSY.get_bus(gen))
+            if occursin("ActivePowerInVariable", var)
+                multiplier = -1
+            else
+                multiplier = 1
+            end
+            if haskey(nodal_injection, "$bus")
+                nodal_injection["$bus"] = nodal_injection["$bus"] .+ (multiplier .* variables[var][:, name])
+            else
+                nodal_injection["$bus"] = multiplier .* variables[var][:, name]
+            end
+            if !haskey(nodal_injection, "DateTime")
+                nodal_injection["DateTime"] = variables[var][:, :DateTime]
+            end
+        end
+    end
+
+    loads = PSY.get_components(PSY.StaticLoad, system)
+    load_types = unique(typeof.(loads))
+    for load_type in load_types
+        @show load_type
+        param_keys = filter(x-> occursin("$load_type", x) && occursin("ActivePowerTimeSeriesParameter", x), keys(parameters))
+        for load in PSY.get_components(load_type, system, PSY.get_available), param in param_keys
+            name = PSY.get_name(load)
+            bus = PSY.get_number(PSY.get_bus(load))
+            if haskey(nodal_injection, "$bus")
+                nodal_injection["$bus"] = nodal_injection["$bus"] .+ parameters[param][:, name]
+            else
+                nodal_injection["$bus"] = parameters[param][:, name]
+            end
+            if !haskey(nodal_injection, "DateTime")
+                nodal_injection["DateTime"] = parameters[param][:, :DateTime]
+            end
+        end
+    end
+
+    var_keys = filter(x-> occursin("HVDCLine", x) && occursin("FlowActivePowerVariable", x), keys(variables))
+    for line in PSY.get_components(PSY.HVDCLine, system, PSY.get_available), var in var_keys
+        name = PSY.get_name(line)
+        bus_from = PSY.get_number(PSY.get_from(PSY.get_arc(line)))
+        bus_to = PSY.get_number(PSY.get_to(PSY.get_arc(line)))
+        if haskey(nodal_injection, "$bus_from")
+            nodal_injection["$bus_from"] = nodal_injection["$bus_from"] .- variables[var][:, name]
+        else
+            nodal_injection["$bus_from"] = - variables[var][:, name]
+        end
+        if haskey(nodal_injection, "$bus_to")
+            nodal_injection["$bus_to"] = nodal_injection["$bus_to"] .+  variables[var][:, name]
+        else
+            nodal_injection["$bus_to"] = variables[var][:, name]
+        end
+    end
+
+    for bus in bus_numbers
+        if !haskey(nodal_injection, "$bus")
+            nodal_injection["$bus"] = zeros(length(nodal_injection["DateTime"]))
+        end
+    end
+    df = DataFrame(nodal_injection)
+    return  select!(df, :DateTime, Not(:DateTime))
+end
+
 function read_power_flow(system, variables, expressions; kwargs...)
     active_power_flow_dataframes = filter(x -> startswith(x[1], "FlowActivePower"), variables)
     nodal_injections = filter(x -> startswith(x[1], "ActivePowerBalance__Bus"), expressions)
-
     if isempty(active_power_flow_dataframes) && isempty(nodal_injections)
         error("Simultaion Model doesnt contain network models with explicit flow variables, skipping export of reserve contribution")
     elseif !isempty(nodal_injections)
@@ -120,7 +196,17 @@ function read_power_flow(system, variables, expressions; kwargs...)
     return select!(df, :DateTime, Not(:DateTime))
 end
 
-function export_power_flow(system, variables, expressions, save_dir; kwargs...)
+function export_system_wide_power_flow(system, variables, expressions, parameters, ptdf, save_dir; kwargs...)
+    nodal_injections = filter(x -> startswith(x[1], "ActivePowerBalance__Bus"), expressions)
+    if isempty(nodal_injections)
+        @warn("Simultaion Model doesnt contain nodal injection expression which will be build.")
+        nodal_injections = build_nodal_injection_data(system, variables, parameters)
+    end
+    df = calculate_power_flow(nodal_injections, ptdf, save_dir)
+    return df
+end
+
+function export_power_flow(system, variables, expressions, parameters, save_dir; kwargs...)
     power_flow_mode = get(kwargs, :power_flow, PowerFlowExport.VARIABLE_VALUE_BASED)
     ptdf_passed = get(kwargs, :ptdf, isnothing)
     if power_flow_mode == PowerFlowExport.INJECTION_CALCULATION_BASED
@@ -129,7 +215,13 @@ function export_power_flow(system, variables, expressions, save_dir; kwargs...)
         else
             ptdf = ptdf_passed
         end
-        df = calculate_power_flow(expressions, ptdf, save_dir)
+        if has_nodal_injections
+            df = calculate_power_flow(expressions["ActivePowerBalance__Bus"], ptdf, save_dir)
+        else
+            warn("Simultaion Model doesnt contain nodal injection expression which will be build.")
+            nodal_injections = build_nodal_injection_data(system, variables, parameters)
+            df = calculate_power_flow(nodal_injections, ptdf, save_dir)
+        end
     else
         df = read_power_flow(system, variables, expressions; kwargs...)
     end
@@ -141,14 +233,33 @@ function export_power_flow(system, variables, expressions, save_dir; kwargs...)
     return df
 end
 
-function calculate_power_flow(expressions, ptdf, save_dir; kwargs...)
-    length_ts = length(expressions["ActivePowerBalance__Bus"][:, "DateTime"])
+# function calculate_power_flow(expressions, ptdf, save_dir; kwargs...)
+#     length_ts = length(expressions["ActivePowerBalance__Bus"][:, "DateTime"])
+#     col_names = vcat("DateTime", ptdf.axes[1])
+#     col_types = vcat([Any], repeat([Float64], length(col_names) - 1))
+#     df = DataFrame([n => Vector{T}(undef, length_ts) for (n, T) in zip(col_names, col_types)], copycols=false)
+#     df[:, "DateTime"] = expressions["ActivePowerBalance__Bus"][:, "DateTime"]
+
+#     net_inj = Matrix(expressions["ActivePowerBalance__Bus"][:, string.(ptdf.axes[2])])
+#     _flows = net_inj * ptdf.data'
+
+#     df[:, string.(ptdf.axes[1])] .= _flows
+#     write_marmot_file(
+#         select!(df, :DateTime, Not(:DateTime)),
+#         joinpath(save_dir, "power_flow_actual.csv");
+#         kwargs...
+#     )
+#     return select!(df, :DateTime, Not(:DateTime))
+# end
+
+function calculate_power_flow(net_inj, ptdf, save_dir; kwargs...)
+    length_ts = length(net_inj[:, "DateTime"])
     col_names = vcat("DateTime", ptdf.axes[1])
     col_types = vcat([Any], repeat([Float64], length(col_names) - 1))
     df = DataFrame([n => Vector{T}(undef, length_ts) for (n, T) in zip(col_names, col_types)], copycols=false)
-    df[:, "DateTime"] = expressions["ActivePowerBalance__Bus"][:, "DateTime"]
+    df[:, "DateTime"] = net_inj[:, "DateTime"]
 
-    net_inj = Matrix(expressions["ActivePowerBalance__Bus"][:, string.(ptdf.axes[2])])
+    net_inj = Matrix(net_inj[:, string.(ptdf.axes[2])])
     _flows = net_inj * ptdf.data'
 
     df[:, string.(ptdf.axes[1])] .= _flows
@@ -159,6 +270,7 @@ function calculate_power_flow(expressions, ptdf, save_dir; kwargs...)
     )
     return select!(df, :DateTime, Not(:DateTime))
 end
+
 
 function export_generation_timeseries(parameters, save_dir; kwargs...)
     active_power_dataframes = filter(x -> startswith(x[1], "ActivePowerTimeSeriesParameter") && !occursin("PowerLoad", x[1]), parameters)
@@ -364,9 +476,9 @@ function export_marmot_inputs(results::PSI.ProblemResults, save_dir, export_part
     export_reserve_contribution(variables, save_dir; kwargs...)
     export_commitment(variables, save_dir, ; kwargs...)
 
-    export_power_flow(system, variables, expressions, save_dir; kwargs...)
+    export_power_flow(system, variables, expressions, parameters, save_dir; kwargs...)
 
-    export_net_demand(results, parameters, save_dir; kwargs...)
+    export_net_demand(results, variables, parameters, save_dir; kwargs...)
     export_installed_capacity(system, save_dir; kwargs...)
 end
 
@@ -387,7 +499,7 @@ function export_marmot_inputs(results::PSI.SimulationProblemResults, save_dir; k
     export_reserve_contribution(variables, save_dir; kwargs...)
     export_commitment(variables, save_dir; kwargs...)
 
-    export_power_flow(system, variables, expressions, save_dir; kwargs...)
+    export_power_flow(system, variables, expressions, parameters, save_dir; kwargs...)
 
     export_net_demand(results, variables, parameters, save_dir; kwargs...)
     export_installed_capacity(system, save_dir; kwargs...)
