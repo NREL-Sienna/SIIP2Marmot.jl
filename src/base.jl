@@ -105,7 +105,10 @@ function build_nodal_injection_data(system, variables, parameters)
     bus_numbers = PSY.get_number.(PSY.get_components(PSY.Bus, system))
     generators = PSY.get_components(PSY.Generator, system)
     generator_types = unique(typeof.(generators))
+    storages = PSY.get_components(PSY.Storage, system)
+    generator_types = vcat(generator_types, unique(typeof.(storages)))
     for gen_type in generator_types
+        @show gen_type
         var_keys = filter(x-> occursin("$gen_type", x) && occursin("ActivePower", x), keys(variables))
         for gen in PSY.get_components(gen_type, system, PSY.get_available), var in var_keys
             name = PSY.get_name(gen)
@@ -129,6 +132,7 @@ function build_nodal_injection_data(system, variables, parameters)
     loads = PSY.get_components(PSY.StaticLoad, system)
     load_types = unique(typeof.(loads))
     for load_type in load_types
+        @show load_type
         param_keys = filter(x-> occursin("$load_type", x) && occursin("ActivePowerTimeSeriesParameter", x), keys(parameters))
         for load in PSY.get_components(load_type, system, PSY.get_available), param in param_keys
             name = PSY.get_name(load)
@@ -141,6 +145,23 @@ function build_nodal_injection_data(system, variables, parameters)
             if !haskey(nodal_injection, "DateTime")
                 nodal_injection["DateTime"] = parameters[param][:, :DateTime]
             end
+        end
+    end
+
+    var_keys = filter(x-> occursin("HVDCLine", x) && occursin("FlowActivePowerVariable", x), keys(variables))
+    for line in PSY.get_components(PSY.HVDCLine, system, PSY.get_available), var in var_keys
+        name = PSY.get_name(line)
+        bus_from = PSY.get_number(PSY.get_from(PSY.get_arc(line)))
+        bus_to = PSY.get_number(PSY.get_to(PSY.get_arc(line)))
+        if haskey(nodal_injection, "$bus_from")
+            nodal_injection["$bus_from"] = nodal_injection["$bus_from"] .- variables[var][:, name]
+        else
+            nodal_injection["$bus_from"] = - variables[var][:, name]
+        end
+        if haskey(nodal_injection, "$bus_to")
+            nodal_injection["$bus_to"] = nodal_injection["$bus_to"] .+  variables[var][:, name]
+        else
+            nodal_injection["$bus_to"] = variables[var][:, name]
         end
     end
 
