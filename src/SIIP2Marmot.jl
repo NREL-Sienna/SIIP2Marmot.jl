@@ -17,6 +17,7 @@ export find_interfaces
 export read_power_flow
 export export_custom_interface_flow
 export export_interface_flow
+export export_system_wide_power_flow
 export PowerFlowExport
 
 #################################################################################

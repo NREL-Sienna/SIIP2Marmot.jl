@@ -233,25 +233,6 @@ function export_power_flow(system, variables, expressions, parameters, save_dir;
     return df
 end
 
-# function calculate_power_flow(expressions, ptdf, save_dir; kwargs...)
-#     length_ts = length(expressions["ActivePowerBalance__Bus"][:, "DateTime"])
-#     col_names = vcat("DateTime", ptdf.axes[1])
-#     col_types = vcat([Any], repeat([Float64], length(col_names) - 1))
-#     df = DataFrame([n => Vector{T}(undef, length_ts) for (n, T) in zip(col_names, col_types)], copycols=false)
-#     df[:, "DateTime"] = expressions["ActivePowerBalance__Bus"][:, "DateTime"]
-
-#     net_inj = Matrix(expressions["ActivePowerBalance__Bus"][:, string.(ptdf.axes[2])])
-#     _flows = net_inj * ptdf.data'
-
-#     df[:, string.(ptdf.axes[1])] .= _flows
-#     write_marmot_file(
-#         select!(df, :DateTime, Not(:DateTime)),
-#         joinpath(save_dir, "power_flow_actual.csv");
-#         kwargs...
-#     )
-#     return select!(df, :DateTime, Not(:DateTime))
-# end
-
 function calculate_power_flow(net_inj, ptdf, save_dir; kwargs...)
     length_ts = length(net_inj[:, "DateTime"])
     col_names = vcat("DateTime", ptdf.axes[1])
